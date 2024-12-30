@@ -45,17 +45,56 @@ namespace {
   // -----------------------------------------------------------------------------------------------
   QPixmap grabScreenDBusKde()
   {
-    QDBusInterface interface(QStringLiteral("org.kde.KWin"),
-                             QStringLiteral("/Screenshot"),
-                             QStringLiteral("org.kde.kwin.Screenshot"));
-    QDBusReply<QString> reply = interface.call(QStringLiteral("screenshotFullscreen"));
-    QPixmap pm(reply.value());
-    if (!pm.isNull()) {
-      QFile::remove(reply.value());
-    } else {
-      logError(desktop) << LinuxDesktop::tr("Screenshot via KDE DBus interface failed.");
+    // Create a temporary file to receive the screenshot data
+    QTemporaryFile tempFile;
+    if (!tempFile.open()) {
+      qDebug() << "Failed to create temporary file";
+      return QPixmap();
     }
-    return pm;
+
+    QDBusUnixFileDescriptor pipe(tempFile.handle());
+
+    QVariantMap options;
+    options["include-cursor"] = false;  // Include mouse cursor in screenshot
+    options["include-decoration"] = false;  // Include window decorations
+    options["native-resolution"] = true;  // Use native resolution
+
+    // Create DBus interface
+    QDBusInterface interface(
+        QStringLiteral("org.kde.KWin.ScreenShot2"),
+        QStringLiteral("/org/kde/KWin/ScreenShot2"),
+        QStringLiteral("org.kde.KWin.ScreenShot2")
+    );
+
+    QList<QVariant> args;
+    args << QVariant::fromValue(options)
+         << QVariant::fromValue(pipe);
+
+    QDBusReply<QVariantMap> reply = interface.callWithArgumentList(
+        QDBus::Block,
+        QStringLiteral("CaptureActiveScreen"),
+        args
+    );
+
+    if (!reply.isValid()) {
+      qDebug() << "Screenshot failed:" << reply.error().message();
+      return QPixmap();
+    }
+
+    QVariantMap results = reply.value();
+
+    if (results["status"].toString() != "ok") {
+      qDebug() << "Screenshot failed with status:" << results["status"].toString();
+      qDebug() << "Error message:" << results["error"].toString();
+      return QPixmap();
+    }
+
+    tempFile.seek(0);
+
+    QImage screenshot;
+    screenshot.load(&tempFile, "PNG");  // Format should match what KWin writes
+
+    return QPixmap::fromImage(screenshot);
   }
 #endif // HAS_Qt_DBus
 
